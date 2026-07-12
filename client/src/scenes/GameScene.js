@@ -1,29 +1,104 @@
 import Phaser from 'phaser';
-import { TILE_WIDTH, TILE_HEIGHT, cartesianToIso } from '../iso.js';
+import { cartesianToIso } from '../iso.js';
+import {
+  GRID_SIZE,
+  computeInputVector,
+  resolveFacing,
+  speedForInput,
+  stepPosition,
+  startJump,
+  advanceJump,
+} from '@rpg/shared';
+import GameClient from '../net/GameClient.js';
+import { generateForestMap } from '../maps/forest.js';
 
-const GRID_SIZE = 12;
-const PLAYER_SPEED = 3.2; // tile units per second
-const PLAYER_RUN_SPEED = 6; // tile units per second
-const WORLD_MARGIN = 0.5;
+const TILE_KEYS = [
+  'grassWhole',
+  'water',
+  'waterN',
+  'waterS',
+  'waterE',
+  'waterW',
+  'waterNE',
+  'waterNW',
+  'waterSW',
+  'waterES',
+  'waterCornerNE',
+  'waterCornerNW',
+  'waterCornerSW',
+  'waterCornerES',
+  'road',
+  'roadNS',
+  'roadEW',
+  'roadNE',
+  'roadNW',
+  'roadSW',
+  'roadES',
+  'crossroad',
+  'crossroadNES',
+  'crossroadNEW',
+  'crossroadNSW',
+  'crossroadESW',
+  'endN',
+  'endS',
+  'endE',
+  'endW',
+  'bridgeNS',
+  'bridgeEW',
+  'treeShort',
+  'treeTall',
+  'treeAltShort',
+  'treeAltTall',
+  'coniferShort',
+  'coniferTall',
+  'coniferAltShort',
+  'coniferAltTall',
+];
 
 const DIRECTIONS = ['down', 'up', 'left', 'right'];
 const WALK_FRAME_COUNT = 9;
 const IDLE_FRAME_COUNT = 2;
 const RUN_FRAME_COUNT = 8;
+const JUMP_FRAME_COUNT = 5;
+const JUMP_CYCLE = [1, 2, 3, 4, 5, 2]; // matches LPC's official jump animation cycle
+
+// Fração da distância até a posição autoritativa corrigida por frame — puxa
+// suavemente a predição local em vez de "teleportar" quando o servidor diverge.
+const RECONCILIATION_FACTOR = 0.15;
+// Fração da distância até a posição alvo interpolada por frame, pra suavizar
+// jitter de rede nos jogadores remotos.
+const REMOTE_INTERPOLATION_FACTOR = 0.25;
+// Distância em px acima dos pés (origem do sprite) onde o número fica, acima da cabeça.
+const PLAYER_LABEL_OFFSET_Y = 70;
+// Árvores/coníferas do pacote Kenney nascem bem pequenas (~12-19px) — escala pra
+// ficarem proporcionais ao personagem (64px) e ao tile (100px).
+const TREE_SCALE = 2.6;
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
     super('game');
+    this.mapId = 'forest';
     this.player = { x: GRID_SIZE / 2, y: GRID_SIZE / 2 };
     this.keys = null;
     this.props = [];
     this.facing = 'down';
+    this.jump = { isJumping: false, jumpVelocity: 0, jumpHeight: 0 };
+
+    this.net = new GameClient();
+    this.sessionId = null;
+    this.serverPlayer = null; // referência viva ao PlayerState do próprio jogador
+    this.playerNumber = null;
+    this.remotePlayers = new Map(); // sessionId -> { sprite, label, state, renderX, renderY }
+  }
+
+  init(data) {
+    this.mapId = data?.mapId ?? this.mapId;
   }
 
   preload() {
-    this.generateTileTexture('tile-a', 0x4caf6d, 0x3a7d55);
-    this.generateTileTexture('tile-b', 0x45a663, 0x357d4c);
-    this.generatePropTexture();
+    TILE_KEYS.forEach((tileKey) => {
+      this.load.image(tileKey, `assets/tiles/${tileKey}.png`);
+    });
 
     DIRECTIONS.forEach((dir) => {
       for (let i = 1; i <= WALK_FRAME_COUNT; i++) {
@@ -35,6 +110,9 @@ export default class GameScene extends Phaser.Scene {
       for (let i = 1; i <= RUN_FRAME_COUNT; i++) {
         this.load.image(`run-${dir}-${i}`, `assets/character/run-${dir}-${i}.png`);
       }
+      for (let i = 1; i <= JUMP_FRAME_COUNT; i++) {
+        this.load.image(`jump-${dir}-${i}`, `assets/character/jump-${dir}-${i}.png`);
+      }
     });
   }
 
@@ -44,6 +122,18 @@ export default class GameScene extends Phaser.Scene {
 
     this.playerSprite = this.add.sprite(0, 0, 'idle-down-1');
     this.playerSprite.setOrigin(0.5, 1);
+    this.playerLabel = this.createPlayerLabel('');
+
+    this.playerNumberText = this.add
+      .text(16, 16, '', {
+        fontFamily: 'monospace',
+        fontSize: '20px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 4,
+      })
+      .setScrollFactor(0)
+      .setDepth(10000);
 
     DIRECTIONS.forEach((dir) => {
       this.anims.create({
@@ -64,6 +154,12 @@ export default class GameScene extends Phaser.Scene {
         frameRate: 14,
         repeat: -1,
       });
+      this.anims.create({
+        key: `jump-${dir}`,
+        frames: JUMP_CYCLE.map((i) => ({ key: `jump-${dir}-${i}` })),
+        frameRate: 10,
+        repeat: 0,
+      });
     });
 
     this.keys = this.input.keyboard.addKeys({
@@ -72,20 +168,80 @@ export default class GameScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
       run: Phaser.Input.Keyboard.KeyCodes.SHIFT,
+      jump: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
 
     this.cameras.main.startFollow(this.playerSprite, true, 0.15, 0.15);
     this.cameras.main.setZoom(1);
 
-    this.updatePlayerScreenPosition();
+    this.updateEntityScreenPosition(this.playerSprite, this.player.x, this.player.y, 0, this.playerLabel);
+
+    this.connectToServer();
+  }
+
+  async connectToServer() {
+    await this.net.connect(this.mapId);
+    this.sessionId = this.net.sessionId;
+
+    this.net.onPlayerAdd((player, sessionId) => {
+      if (sessionId === this.sessionId) {
+        // Sincroniza com a posição inicial autoritativa antes de seguir prevendo localmente.
+        this.player.x = player.x;
+        this.player.y = player.y;
+        this.serverPlayer = player;
+        this.playerNumber = player.number;
+        this.playerLabel.setText(`#${player.number}`);
+        this.playerNumberText.setText(`Jogador #${player.number}`);
+        return;
+      }
+      this.addRemotePlayer(sessionId, player);
+    });
+
+    this.net.onPlayerRemove((_player, sessionId) => {
+      this.removeRemotePlayer(sessionId);
+    });
+  }
+
+  createPlayerLabel(number) {
+    const label = this.add.text(0, 0, number === '' ? '' : `#${number}`, {
+      fontFamily: 'monospace',
+      fontSize: '16px',
+      color: '#ffff00',
+      stroke: '#000000',
+      strokeThickness: 4,
+    });
+    label.setOrigin(0.5, 1);
+    return label;
+  }
+
+  addRemotePlayer(sessionId, playerState) {
+    const sprite = this.add.sprite(0, 0, 'idle-down-1');
+    sprite.setOrigin(0.5, 1);
+    const label = this.createPlayerLabel(playerState.number);
+    this.remotePlayers.set(sessionId, {
+      sprite,
+      label,
+      state: playerState,
+      renderX: playerState.x,
+      renderY: playerState.y,
+    });
+  }
+
+  removeRemotePlayer(sessionId) {
+    const remote = this.remotePlayers.get(sessionId);
+    if (!remote) return;
+    remote.sprite.destroy();
+    remote.label.destroy();
+    this.remotePlayers.delete(sessionId);
   }
 
   drawFloor() {
-    for (let gx = 0; gx < GRID_SIZE; gx++) {
-      for (let gy = 0; gy < GRID_SIZE; gy++) {
+    this.map = generateForestMap(GRID_SIZE);
+
+    for (let gx = 0; gx < this.map.size; gx++) {
+      for (let gy = 0; gy < this.map.size; gy++) {
         const iso = cartesianToIso(gx, gy);
-        const key = (gx + gy) % 2 === 0 ? 'tile-a' : 'tile-b';
-        const tile = this.add.image(iso.x, iso.y, key);
+        const tile = this.add.image(iso.x, iso.y, this.map.getGroundKey(gx, gy));
         tile.setOrigin(0.5, 0.5);
         tile.setDepth(-1000); // floor always behind everything
       }
@@ -93,17 +249,11 @@ export default class GameScene extends Phaser.Scene {
   }
 
   placeProps() {
-    const positions = [
-      { x: 3, y: 3 },
-      { x: 8, y: 4 },
-      { x: 5, y: 8 },
-      { x: 9, y: 9 },
-    ];
-
-    positions.forEach(({ x, y }) => {
+    this.map.decorations.forEach(({ x, y, key: tileKey }) => {
       const iso = cartesianToIso(x, y);
-      const prop = this.add.image(iso.x, iso.y, 'prop');
+      const prop = this.add.image(iso.x, iso.y, tileKey);
       prop.setOrigin(0.5, 1);
+      prop.setScale(TREE_SCALE);
       prop.setDepth(iso.y);
       this.props.push(prop);
     });
@@ -111,135 +261,105 @@ export default class GameScene extends Phaser.Scene {
 
   update(time, delta) {
     const dt = delta / 1000;
-    const upPressed = this.keys.up.isDown;
-    const downPressed = this.keys.down.isDown;
-    const leftPressed = this.keys.left.isDown;
-    const rightPressed = this.keys.right.isDown;
+    const input = {
+      up: this.keys.up.isDown,
+      down: this.keys.down.isDown,
+      left: this.keys.left.isDown,
+      right: this.keys.right.isDown,
+      run: this.keys.run.isDown,
+    };
 
-    let dx = 0;
-    let dy = 0;
-
-    // WASD é relativo à tela (cima/baixo/esquerda/direita visual), não aos
-    // eixos brutos do grid isométrico — por isso cada tecla mexe nos dois
-    // eixos cartesianos ao mesmo tempo (rotação de 45° do input).
-    if (upPressed) {
-      dx -= 1;
-      dy -= 1;
-    }
-    if (downPressed) {
-      dx += 1;
-      dy += 1;
-    }
-    if (leftPressed) {
-      dx -= 1;
-      dy += 1;
-    }
-    if (rightPressed) {
-      dx += 1;
-      dy -= 1;
-    }
-
+    const { dx, dy } = computeInputVector(input);
     const isMoving = dx !== 0 || dy !== 0;
-    const isRunning = isMoving && this.keys.run.isDown;
+    const isRunning = isMoving && input.run;
 
     if (isMoving) {
-      const len = Math.hypot(dx, dy);
-      dx /= len;
-      dy /= len;
-
-      const speed = isRunning ? PLAYER_RUN_SPEED : PLAYER_SPEED;
-      this.player.x += dx * speed * dt;
-      this.player.y += dy * speed * dt;
-
-      this.player.x = Phaser.Math.Clamp(this.player.x, WORLD_MARGIN, GRID_SIZE - WORLD_MARGIN);
-      this.player.y = Phaser.Math.Clamp(this.player.y, WORLD_MARGIN, GRID_SIZE - WORLD_MARGIN);
-
-      if (leftPressed && !rightPressed) this.facing = 'left';
-      else if (rightPressed && !leftPressed) this.facing = 'right';
-      else if (upPressed && !downPressed) this.facing = 'up';
-      else if (downPressed && !upPressed) this.facing = 'down';
+      const { x, y } = stepPosition(this.player, { dx, dy }, dt, { speed: speedForInput(isRunning) });
+      this.player.x = x;
+      this.player.y = y;
+      this.facing = resolveFacing(this.facing, input);
     }
 
-    this.updateAnimation(isMoving, isRunning);
-    this.updatePlayerScreenPosition();
+    if (Phaser.Input.Keyboard.JustDown(this.keys.jump)) {
+      this.jump = startJump(this.jump);
+      this.net.sendJump();
+    }
+    this.jump = advanceJump(this.jump, dt);
+
+    this.net.sendInput(input);
+
+    // Reconciliação simples: puxa a predição local em direção ao estado
+    // autoritativo do servidor a cada frame, sem replay de input history.
+    if (this.serverPlayer) {
+      this.player.x += (this.serverPlayer.x - this.player.x) * RECONCILIATION_FACTOR;
+      this.player.y += (this.serverPlayer.y - this.player.y) * RECONCILIATION_FACTOR;
+    }
+
+    this.updateEntityAnimation(this.playerSprite, this.facing, {
+      isMoving,
+      isRunning,
+      isJumping: this.jump.isJumping,
+    });
+    this.updateEntityScreenPosition(
+      this.playerSprite,
+      this.player.x,
+      this.player.y,
+      this.jump.jumpHeight,
+      this.playerLabel,
+    );
+
+    this.updateRemotePlayers();
   }
 
-  updateAnimation(isMoving, isRunning) {
-    const animKey = isRunning ? `run-${this.facing}` : isMoving ? `walk-${this.facing}` : `idle-${this.facing}`;
+  updateRemotePlayers() {
+    this.remotePlayers.forEach((remote) => {
+      remote.renderX += (remote.state.x - remote.renderX) * REMOTE_INTERPOLATION_FACTOR;
+      remote.renderY += (remote.state.y - remote.renderY) * REMOTE_INTERPOLATION_FACTOR;
 
-    if (this.playerSprite.anims.currentAnim?.key !== animKey || !this.playerSprite.anims.isPlaying) {
-      this.playerSprite.play(animKey);
+      this.updateEntityAnimation(remote.sprite, remote.state.facing, {
+        isMoving: remote.state.moving,
+        isRunning: remote.state.running,
+        isJumping: remote.state.isJumping,
+      });
+      this.updateEntityScreenPosition(
+        remote.sprite,
+        remote.renderX,
+        remote.renderY,
+        remote.state.jumpHeight,
+        remote.label,
+      );
+    });
+  }
+
+  updateEntityAnimation(sprite, facing, { isMoving, isRunning, isJumping }) {
+    const animKey = isJumping
+      ? `jump-${facing}`
+      : isRunning
+        ? `run-${facing}`
+        : isMoving
+          ? `walk-${facing}`
+          : `idle-${facing}`;
+
+    const isNewAnim = sprite.anims.currentAnim?.key !== animKey;
+    // Enquanto pulando, não reinicia a animação mesmo que ela termine antes
+    // do arco físico (senão os frames de pouso ficam repetindo em loop).
+    const shouldPlay = isNewAnim || (!isJumping && !sprite.anims.isPlaying);
+
+    if (shouldPlay) {
+      sprite.play(animKey);
     }
   }
 
-  updatePlayerScreenPosition() {
-    const iso = cartesianToIso(this.player.x, this.player.y);
-    this.playerSprite.setPosition(iso.x, iso.y);
-    this.playerSprite.setDepth(iso.y);
+  updateEntityScreenPosition(sprite, x, y, jumpHeight, label) {
+    const iso = cartesianToIso(x, y);
+    const screenY = iso.y - jumpHeight;
+    sprite.setPosition(iso.x, screenY);
+    sprite.setDepth(iso.y);
+
+    if (label) {
+      label.setPosition(iso.x, screenY - PLAYER_LABEL_OFFSET_Y);
+      label.setDepth(iso.y + 1000); // sempre acima de sprites/props na mesma coluna
+    }
   }
 
-  generateTileTexture(key, topColor, edgeColor) {
-    const g = this.make.graphics({ x: 0, y: 0, add: false });
-    const w = TILE_WIDTH;
-    const h = TILE_HEIGHT;
-
-    g.fillStyle(topColor, 1);
-    g.beginPath();
-    g.moveTo(w / 2, 0);
-    g.lineTo(w, h / 2);
-    g.lineTo(w / 2, h);
-    g.lineTo(0, h / 2);
-    g.closePath();
-    g.fillPath();
-
-    g.lineStyle(1, edgeColor, 0.6);
-    g.strokePath();
-
-    g.generateTexture(key, w, h);
-    g.destroy();
-  }
-
-  generatePropTexture() {
-    const g = this.make.graphics({ x: 0, y: 0, add: false });
-    const w = TILE_WIDTH * 0.7;
-    const h = TILE_HEIGHT * 0.7;
-    const boxHeight = 60;
-
-    const topY = 0;
-    const midY = h / 2;
-    const botY = h;
-
-    // left face
-    g.fillStyle(0x8a5a2b, 1);
-    g.beginPath();
-    g.moveTo(0, midY);
-    g.lineTo(w / 2, botY);
-    g.lineTo(w / 2, botY + boxHeight);
-    g.lineTo(0, midY + boxHeight);
-    g.closePath();
-    g.fillPath();
-
-    // right face
-    g.fillStyle(0x6e4520, 1);
-    g.beginPath();
-    g.moveTo(w / 2, botY);
-    g.lineTo(w, midY);
-    g.lineTo(w, midY + boxHeight);
-    g.lineTo(w / 2, botY + boxHeight);
-    g.closePath();
-    g.fillPath();
-
-    // top face
-    g.fillStyle(0xb07a3e, 1);
-    g.beginPath();
-    g.moveTo(w / 2, topY);
-    g.lineTo(w, midY);
-    g.lineTo(w / 2, botY);
-    g.lineTo(0, midY);
-    g.closePath();
-    g.fillPath();
-
-    g.generateTexture('prop', w, h + boxHeight);
-    g.destroy();
-  }
 }

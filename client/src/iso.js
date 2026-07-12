@@ -1,5 +1,5 @@
-export const TILE_WIDTH = 128;
-export const TILE_HEIGHT = 64;
+export const TILE_WIDTH = 100;
+export const TILE_HEIGHT = 65;
 
 export function cartesianToIso(x, y) {
   return {
