@@ -1,17 +1,14 @@
 {
-  "name": "rpg-proto",
+  "name": "sandbox-rpg",
   "version": "0.0.1",
   "private": true,
-  "type": "module",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "phaser": "^3.80.1"
-  },
-  "devDependencies": {
-    "vite": "^5.4.0"
+    "dev:client": "npm run dev -w client",
+    "dev:server": "npm run dev -w server"
   }
 }
