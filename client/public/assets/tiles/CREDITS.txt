@@ -1,0 +1,3 @@
+Tiles em assets/tiles/ (grass/water/road/crossroad/end/bridge/tree/conifer) vêm do
+pacote "Isometric Roads" (NOVA) por Kenney Vleugels (kenney.nl).
+Licença: CC0 — uso livre, atribuição não obrigatória.
