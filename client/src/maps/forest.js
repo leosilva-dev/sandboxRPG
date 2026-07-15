@@ -1,11 +1,9 @@
-// Geração procedural do terreno do mapa "forest": lago orgânico (autotile de água),
-// estrada serpenteando com ponte sobre a água (autotile de estrada) e bosques
-// espalhados com árvores/coníferas variadas. Determinístico (seed fixa) para o
+// Geração procedural do terreno do mapa "forest": grama de base, um caminho
+// de pedra serpenteando entre pontos de passagem, e bosques espalhados com
+// árvores/arbustos/pedras variados. Determinístico (seed fixa) para o
 // layout não mudar a cada reload.
 
 const SEED = 20260712;
-const CARDINALS = ['N', 'E', 'S', 'W'];
-const DELTA = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
 
 function mulberry32(seed) {
   let state = seed;
@@ -20,127 +18,6 @@ function mulberry32(seed) {
 
 function key(x, y) {
   return `${x},${y}`;
-}
-
-function inBounds(x, y, size) {
-  return x >= 0 && y >= 0 && x < size && y < size;
-}
-
-// Sufixo canônico N,E,S,W filtrado pelas direções presentes — casa com a
-// convenção de nomes de arquivo do pacote inteiro (waterNE, crossroadNES, etc).
-function suffixFor(dirSet) {
-  return CARDINALS.filter((d) => dirSet.has(d)).join('');
-}
-
-function generateLakes(size, rng) {
-  const water = new Set();
-  const lakeCount = 2;
-
-  const centerX = size / 2;
-  const centerY = size / 2;
-  const spawnClearRadius = size * 0.22;
-
-  for (let i = 0; i < lakeCount; i++) {
-    let cx;
-    let cy;
-    do {
-      cx = size * 0.15 + rng() * size * 0.7;
-      cy = size * 0.15 + rng() * size * 0.7;
-    } while (Math.hypot(cx - centerX, cy - centerY) < spawnClearRadius);
-    const radius = 5 + rng() * 4;
-
-    for (let x = Math.floor(cx - radius - 2); x <= cx + radius + 2; x++) {
-      for (let y = Math.floor(cy - radius - 2); y <= cy + radius + 2; y++) {
-        if (!inBounds(x, y, size)) continue;
-        const d = Math.hypot(x - cx, y - cy) + (rng() - 0.5) * 3;
-        if (d < radius) water.add(key(x, y));
-      }
-    }
-  }
-
-  // Suaviza por autômato celular (regra da maioria) pra virar blobs convexos,
-  // sem canais finos nem ilhas de 1 célula que o autotile não sabe desenhar.
-  for (let pass = 0; pass < 2; pass++) {
-    const next = new Set();
-    for (let x = 0; x < size; x++) {
-      for (let y = 0; y < size; y++) {
-        let wetNeighbors = 0;
-        for (let nx = x - 1; nx <= x + 1; nx++) {
-          for (let ny = y - 1; ny <= y + 1; ny++) {
-            if (nx === x && ny === y) continue;
-            if (water.has(key(nx, ny))) wetNeighbors++;
-          }
-        }
-        const isWet = water.has(key(x, y));
-        if (isWet ? wetNeighbors >= 3 : wetNeighbors >= 5) next.add(key(x, y));
-      }
-    }
-    water.clear();
-    next.forEach((k) => water.add(k));
-  }
-
-  // Remove células de água isoladas (sem vizinho cardinal molhado) — não há
-  // tile de "lagoa de 1 célula" no pacote.
-  const isolated = [];
-  water.forEach((k) => {
-    const [x, y] = k.split(',').map(Number);
-    const hasWetCardinal = CARDINALS.some((d) => {
-      const [dx, dy] = DELTA[d];
-      return water.has(key(x + dx, y + dy));
-    });
-    if (!hasWetCardinal) isolated.push(k);
-  });
-  isolated.forEach((k) => water.delete(k));
-
-  return water;
-}
-
-function waterTileKey(water, x, y) {
-  const grassDirs = new Set();
-  CARDINALS.forEach((d) => {
-    const [dx, dy] = DELTA[d];
-    if (!water.has(key(x + dx, y + dy))) grassDirs.add(d);
-  });
-
-  if (grassDirs.size === 0) return 'water';
-
-  if (grassDirs.size === 1) return `water${suffixFor(grassDirs)}`;
-
-  if (grassDirs.size === 2) {
-    const suffix = suffixFor(grassDirs);
-    if (suffix === 'NE' || suffix === 'NW' || suffix === 'SW' || suffix === 'ES') {
-      return `water${suffix}`;
-    }
-    // par oposto (NS ou EW) não tem tile dedicado — cai pra 1 lado só.
-    return `water${CARDINALS.find((d) => grassDirs.has(d))}`;
-  }
-
-  // 3-4 lados com grama: célula quase isolada, aproxima pro primeiro par válido.
-  for (const suffix of ['NE', 'NW', 'SW', 'ES']) {
-    const dirs = suffix.split('');
-    if (dirs.every((d) => grassDirs.has(d))) return `water${suffix}`;
-  }
-  return `water${CARDINALS.find((d) => grassDirs.has(d))}`;
-}
-
-function waterCornerTileKey(water, x, y) {
-  // Célula seca com água só na diagonal (cantinho convexo arredondado).
-  const diagonals = {
-    NE: [1, -1],
-    NW: [-1, -1],
-    SW: [-1, 1],
-    ES: [1, 1],
-  };
-  for (const [suffix, [dx, dy]] of Object.entries(diagonals)) {
-    const [cardinalA, cardinalB] = suffix.split('');
-    const [dxA, dyA] = DELTA[cardinalA];
-    const [dxB, dyB] = DELTA[cardinalB];
-    const cardinalAWet = water.has(key(x + dxA, y + dyA));
-    const cardinalBWet = water.has(key(x + dxB, y + dyB));
-    const diagonalWet = water.has(key(x + dx, y + dy));
-    if (diagonalWet && !cardinalAWet && !cardinalBWet) return `waterCorner${suffix}`;
-  }
-  return null;
 }
 
 function buildPath(from, to, rng) {
@@ -160,9 +37,8 @@ function buildPath(from, to, rng) {
   return cells;
 }
 
-function generateRoad(size, rng, water) {
+function generateRoad(size, rng) {
   const road = new Set();
-  const bridges = new Map(); // key -> 'NS' | 'EW'
   const margin = 4;
   const waypoints = [
     [margin, Math.floor(size / 2)],
@@ -173,43 +49,27 @@ function generateRoad(size, rng, water) {
 
   for (let i = 0; i < waypoints.length - 1; i++) {
     const cells = buildPath(waypoints[i], waypoints[i + 1], rng);
-    cells.forEach(([x, y], idx) => {
-      if (water.has(key(x, y))) {
-        const [px, py] = idx > 0 ? cells[idx - 1] : cells[idx + 1];
-        bridges.set(key(x, y), px === x ? 'NS' : 'EW');
-      } else {
-        road.add(key(x, y));
-      }
-    });
+    cells.forEach(([x, y]) => road.add(key(x, y)));
   }
 
-  return { road, bridges };
+  return road;
 }
 
-function roadTileKey(road, x, y, size) {
-  const connected = new Set();
-  CARDINALS.forEach((d) => {
-    const [dx, dy] = DELTA[d];
-    if (inBounds(x + dx, y + dy, size) && road.has(key(x + dx, y + dy))) connected.add(d);
-  });
-
-  if (connected.size === 0) return 'road';
-  if (connected.size === 1) return `end${suffixFor(connected)}`;
-  if (connected.size === 2) return `road${suffixFor(connected)}`;
-  if (connected.size === 3) return `crossroad${suffixFor(connected)}`;
-  return 'crossroad';
-}
-
-const TREE_VARIANTS = [
-  'treeShort',
-  'treeTall',
-  'treeAltShort',
-  'treeAltTall',
-  'coniferShort',
-  'coniferTall',
-  'coniferAltShort',
-  'coniferAltTall',
+const TREE_VARIANTS = ['treeSmall', 'treeMedium', 'treeLarge'];
+const BUSH_VARIANTS = ['bush1', 'bush2', 'bush3', 'bush4', 'bush5', 'bush6'];
+const ROCK_VARIANTS = ['rock1', 'rock2', 'rock3', 'rock4', 'rock5', 'rock6'];
+const GRASS_TUFT_VARIANTS = [
+  'grassTuft1',
+  'grassTuft2',
+  'grassTuft3',
+  'grassTuft4',
+  'grassTuft5',
+  'grassTuft6',
 ];
+
+function pick(rng, variants) {
+  return variants[Math.floor(rng() * variants.length)];
+}
 
 function generateForestPatches(size, rng, blocked) {
   const decorations = [];
@@ -235,10 +95,14 @@ function generateForestPatches(size, rng, blocked) {
         const density = 0.4 * (1 - d / radius) + 0.05;
         if (rng() > density) continue;
 
+        const roll = rng();
+        const variantKey =
+          roll < 0.55 ? pick(rng, TREE_VARIANTS) : roll < 0.85 ? pick(rng, BUSH_VARIANTS) : pick(rng, ROCK_VARIANTS);
+
         decorations.push({
           x: x + (rng() - 0.35) * 0.6,
           y: y + (rng() - 0.35) * 0.6,
-          key: TREE_VARIANTS[Math.floor(rng() * TREE_VARIANTS.length)],
+          key: variantKey,
         });
       }
     }
@@ -247,22 +111,38 @@ function generateForestPatches(size, rng, blocked) {
   return decorations;
 }
 
+// Espalha touceiras de grama/flor pelo resto do mapa (fora dos bosques e do
+// caminho) pra quebrar a monotonia do verde liso, com densidade baixa.
+function generateGrassTufts(size, rng, blocked) {
+  const decorations = [];
+  const density = 0.03;
+
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      if (blocked.has(key(x, y))) continue;
+      if (rng() > density) continue;
+      decorations.push({
+        x: x + (rng() - 0.5) * 0.8,
+        y: y + (rng() - 0.5) * 0.8,
+        key: pick(rng, GRASS_TUFT_VARIANTS),
+      });
+    }
+  }
+
+  return decorations;
+}
+
 export function generateForestMap(size) {
   const rng = mulberry32(SEED);
-  const water = generateLakes(size, rng);
-  const { road, bridges } = generateRoad(size, rng, water);
+  const road = generateRoad(size, rng);
 
-  const blockedForForest = new Set([...water, ...road, ...bridges.keys()]);
-  const decorations = generateForestPatches(size, rng, blockedForForest);
+  const decorations = [
+    ...generateForestPatches(size, rng, road),
+    ...generateGrassTufts(size, rng, road),
+  ];
 
   function getGroundKey(x, y) {
-    const k = key(x, y);
-    if (bridges.has(k)) return bridges.get(k) === 'NS' ? 'bridgeNS' : 'bridgeEW';
-    if (road.has(k)) return roadTileKey(road, x, y, size);
-    if (water.has(k)) return waterTileKey(water, x, y);
-    const corner = waterCornerTileKey(water, x, y);
-    if (corner) return corner;
-    return 'grassWhole';
+    return road.has(key(x, y)) ? 'pathTile' : 'grassTile';
   }
 
   return { size, getGroundKey, decorations };

@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { cartesianToIso } from '../iso.js';
+import { gridToScreen, TILE_SIZE } from '../grid.js';
 import {
   GRID_SIZE,
   computeInputVector,
@@ -11,48 +11,32 @@ import {
 } from '@rpg/shared';
 import GameClient from '../net/GameClient.js';
 import { generateForestMap } from '../maps/forest.js';
+import TouchControls from '../input/TouchControls.js';
 
 const TILE_KEYS = [
-  'grassWhole',
-  'water',
-  'waterN',
-  'waterS',
-  'waterE',
-  'waterW',
-  'waterNE',
-  'waterNW',
-  'waterSW',
-  'waterES',
-  'waterCornerNE',
-  'waterCornerNW',
-  'waterCornerSW',
-  'waterCornerES',
-  'road',
-  'roadNS',
-  'roadEW',
-  'roadNE',
-  'roadNW',
-  'roadSW',
-  'roadES',
-  'crossroad',
-  'crossroadNES',
-  'crossroadNEW',
-  'crossroadNSW',
-  'crossroadESW',
-  'endN',
-  'endS',
-  'endE',
-  'endW',
-  'bridgeNS',
-  'bridgeEW',
-  'treeShort',
-  'treeTall',
-  'treeAltShort',
-  'treeAltTall',
-  'coniferShort',
-  'coniferTall',
-  'coniferAltShort',
-  'coniferAltTall',
+  'grassTile',
+  'pathTile',
+  'treeSmall',
+  'treeMedium',
+  'treeLarge',
+  'bush1',
+  'bush2',
+  'bush3',
+  'bush4',
+  'bush5',
+  'bush6',
+  'rock1',
+  'rock2',
+  'rock3',
+  'rock4',
+  'rock5',
+  'rock6',
+  'grassTuft1',
+  'grassTuft2',
+  'grassTuft3',
+  'grassTuft4',
+  'grassTuft5',
+  'grassTuft6',
 ];
 
 const DIRECTIONS = ['down', 'up', 'left', 'right'];
@@ -70,9 +54,12 @@ const RECONCILIATION_FACTOR = 0.15;
 const REMOTE_INTERPOLATION_FACTOR = 0.25;
 // Distância em px acima dos pés (origem do sprite) onde o número fica, acima da cabeça.
 const PLAYER_LABEL_OFFSET_Y = 70;
-// Árvores/coníferas do pacote Kenney nascem bem pequenas (~12-19px) — escala pra
-// ficarem proporcionais ao personagem (64px) e ao tile (100px).
-const TREE_SCALE = 2.6;
+// Tiles de chão nascem em 16px (pixel art) — escala pra preencher exatamente
+// o TILE_SIZE (64px) da grade, sem espaços nem sobreposição entre células.
+const GROUND_SCALE = TILE_SIZE / 16;
+// Árvores/arbustos/pedras/touceiras do mesmo pacote já nascem proporcionais
+// entre si — uma única escala preserva a variação de tamanho da arte original.
+const DECORATION_SCALE = 1.5;
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
@@ -84,6 +71,7 @@ export default class GameScene extends Phaser.Scene {
     this.facing = 'down';
     this.jump = { isJumping: false, jumpVelocity: 0, jumpHeight: 0 };
 
+    this.touchControls = null;
     this.net = new GameClient();
     this.sessionId = null;
     this.serverPlayer = null; // referência viva ao PlayerState do próprio jogador
@@ -171,6 +159,14 @@ export default class GameScene extends Phaser.Scene {
       jump: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
 
+    this.touchControls = new TouchControls();
+    this.events.once('shutdown', () => this.touchControls.destroy());
+
+    // Trava a câmera nos limites visuais do chão (tiles centrados na grade,
+    // então a borda real fica meio tile além do último índice) — assim ela
+    // para na borda do mapa em vez de mostrar o fundo vazio além dele.
+    const worldEdge = GRID_SIZE * TILE_SIZE;
+    this.cameras.main.setBounds(-TILE_SIZE / 2, -TILE_SIZE / 2, worldEdge, worldEdge);
     this.cameras.main.startFollow(this.playerSprite, true, 0.15, 0.15);
     this.cameras.main.setZoom(1);
 
@@ -240,9 +236,10 @@ export default class GameScene extends Phaser.Scene {
 
     for (let gx = 0; gx < this.map.size; gx++) {
       for (let gy = 0; gy < this.map.size; gy++) {
-        const iso = cartesianToIso(gx, gy);
-        const tile = this.add.image(iso.x, iso.y, this.map.getGroundKey(gx, gy));
+        const screen = gridToScreen(gx, gy);
+        const tile = this.add.image(screen.x, screen.y, this.map.getGroundKey(gx, gy));
         tile.setOrigin(0.5, 0.5);
+        tile.setScale(GROUND_SCALE);
         tile.setDepth(-1000); // floor always behind everything
       }
     }
@@ -250,23 +247,24 @@ export default class GameScene extends Phaser.Scene {
 
   placeProps() {
     this.map.decorations.forEach(({ x, y, key: tileKey }) => {
-      const iso = cartesianToIso(x, y);
-      const prop = this.add.image(iso.x, iso.y, tileKey);
+      const screen = gridToScreen(x, y);
+      const prop = this.add.image(screen.x, screen.y, tileKey);
       prop.setOrigin(0.5, 1);
-      prop.setScale(TREE_SCALE);
-      prop.setDepth(iso.y);
+      prop.setScale(DECORATION_SCALE);
+      prop.setDepth(screen.y);
       this.props.push(prop);
     });
   }
 
   update(time, delta) {
     const dt = delta / 1000;
+    const touch = this.touchControls.getInput();
     const input = {
-      up: this.keys.up.isDown,
-      down: this.keys.down.isDown,
-      left: this.keys.left.isDown,
-      right: this.keys.right.isDown,
-      run: this.keys.run.isDown,
+      up: this.keys.up.isDown || touch.up,
+      down: this.keys.down.isDown || touch.down,
+      left: this.keys.left.isDown || touch.left,
+      right: this.keys.right.isDown || touch.right,
+      run: this.keys.run.isDown || touch.run,
     };
 
     const { dx, dy } = computeInputVector(input);
@@ -280,7 +278,7 @@ export default class GameScene extends Phaser.Scene {
       this.facing = resolveFacing(this.facing, input);
     }
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys.jump)) {
+    if (Phaser.Input.Keyboard.JustDown(this.keys.jump) || this.touchControls.consumeJumpPress()) {
       this.jump = startJump(this.jump);
       this.net.sendJump();
     }
@@ -351,14 +349,14 @@ export default class GameScene extends Phaser.Scene {
   }
 
   updateEntityScreenPosition(sprite, x, y, jumpHeight, label) {
-    const iso = cartesianToIso(x, y);
-    const screenY = iso.y - jumpHeight;
-    sprite.setPosition(iso.x, screenY);
-    sprite.setDepth(iso.y);
+    const screen = gridToScreen(x, y);
+    const screenY = screen.y - jumpHeight;
+    sprite.setPosition(screen.x, screenY);
+    sprite.setDepth(screen.y);
 
     if (label) {
-      label.setPosition(iso.x, screenY - PLAYER_LABEL_OFFSET_Y);
-      label.setDepth(iso.y + 1000); // sempre acima de sprites/props na mesma coluna
+      label.setPosition(screen.x, screenY - PLAYER_LABEL_OFFSET_Y);
+      label.setDepth(screen.y + 1000); // sempre acima de sprites/props na mesma coluna
     }
   }
 

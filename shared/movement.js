@@ -5,28 +5,13 @@ export const WORLD_MARGIN = 0.5;
 export const JUMP_SPEED = 220; // px per second, initial upward velocity
 export const GRAVITY = 700; // px per second squared
 
-// WASD é relativo à tela (cima/baixo/esquerda/direita visual), não aos eixos
-// brutos do grid isométrico — por isso cada tecla mexe nos dois eixos
-// cartesianos ao mesmo tempo (rotação de 45° do input).
 export function computeInputVector({ up, down, left, right }) {
   let dx = 0;
   let dy = 0;
-  if (up) {
-    dx -= 1;
-    dy -= 1;
-  }
-  if (down) {
-    dx += 1;
-    dy += 1;
-  }
-  if (left) {
-    dx -= 1;
-    dy += 1;
-  }
-  if (right) {
-    dx += 1;
-    dy -= 1;
-  }
+  if (up) dy -= 1;
+  if (down) dy += 1;
+  if (left) dx -= 1;
+  if (right) dx += 1;
   return { dx, dy };
 }
 
