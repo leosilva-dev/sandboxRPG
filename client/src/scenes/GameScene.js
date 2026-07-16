@@ -61,6 +61,10 @@ const GROUND_SCALE = TILE_SIZE / 16;
 // entre si — uma única escala preserva a variação de tamanho da arte original.
 const DECORATION_SCALE = 1.5;
 
+const MINIMAP_SIZE = 160;
+const MINIMAP_MARGIN = 16;
+const MINIMAP_PADDING = 6;
+
 export default class GameScene extends Phaser.Scene {
   constructor() {
     super('game');
@@ -171,6 +175,8 @@ export default class GameScene extends Phaser.Scene {
     this.cameras.main.setZoom(1);
 
     this.updateEntityScreenPosition(this.playerSprite, this.player.x, this.player.y, 0, this.playerLabel);
+
+    this.minimap = this.createMinimap();
 
     this.connectToServer();
   }
@@ -307,6 +313,61 @@ export default class GameScene extends Phaser.Scene {
     );
 
     this.updateRemotePlayers();
+    this.updateMinimap();
+  }
+
+  createMinimap() {
+    const bg = this.add.graphics().setScrollFactor(0).setDepth(9999);
+    const playerDot = this.add
+      .circle(0, 0, 4, 0x2ecc71)
+      .setStrokeStyle(1, 0x0a2e1a)
+      .setScrollFactor(0)
+      .setDepth(10001);
+
+    return { bg, playerDot, remoteDots: new Map() };
+  }
+
+  // Reposiciona a caixa a cada frame com base na largura atual da câmera —
+  // o canvas usa Phaser.Scale.RESIZE, então a janela pode mudar de tamanho
+  // a qualquer momento e o minimapa precisa continuar colado no canto.
+  updateMinimap() {
+    const { bg, playerDot, remoteDots } = this.minimap;
+    const boxX = this.cameras.main.width - MINIMAP_MARGIN - MINIMAP_SIZE;
+    const boxY = MINIMAP_MARGIN;
+    const inner = MINIMAP_SIZE - MINIMAP_PADDING * 2;
+
+    bg.clear();
+    bg.fillStyle(0x000000, 0.5);
+    bg.fillRect(boxX, boxY, MINIMAP_SIZE, MINIMAP_SIZE);
+    bg.lineStyle(2, 0xffffff, 0.8);
+    bg.strokeRect(boxX, boxY, MINIMAP_SIZE, MINIMAP_SIZE);
+
+    const toMinimap = (x, y) => ({
+      x: boxX + MINIMAP_PADDING + (x / GRID_SIZE) * inner,
+      y: boxY + MINIMAP_PADDING + (y / GRID_SIZE) * inner,
+    });
+
+    const playerPos = toMinimap(this.player.x, this.player.y);
+    playerDot.setPosition(playerPos.x, playerPos.y);
+
+    const seen = new Set();
+    this.remotePlayers.forEach((remote, sessionId) => {
+      seen.add(sessionId);
+      let dot = remoteDots.get(sessionId);
+      if (!dot) {
+        dot = this.add.circle(0, 0, 3, 0xf5a623).setScrollFactor(0).setDepth(10001);
+        remoteDots.set(sessionId, dot);
+      }
+      const pos = toMinimap(remote.renderX, remote.renderY);
+      dot.setPosition(pos.x, pos.y);
+    });
+
+    remoteDots.forEach((dot, sessionId) => {
+      if (!seen.has(sessionId)) {
+        dot.destroy();
+        remoteDots.delete(sessionId);
+      }
+    });
   }
 
   updateRemotePlayers() {

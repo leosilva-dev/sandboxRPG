@@ -35,10 +35,15 @@ export function stepPosition(position, { dx, dy }, dt, options = {}) {
   const nx = dx / len;
   const ny = dy / len;
 
+  // O grid posiciona o centro do tile 0 em x=0 e o do último tile em
+  // x=gridSize-1, então a borda visual real fica meio tile além desses
+  // índices — por isso a margem é medida a partir de -0.5/gridSize-0.5,
+  // não de 0/gridSize (senão sobra folga de um tile de um lado e zero do
+  // outro).
   let x = position.x + nx * speed * dt;
   let y = position.y + ny * speed * dt;
-  x = Math.min(Math.max(x, margin), gridSize - margin);
-  y = Math.min(Math.max(y, margin), gridSize - margin);
+  x = Math.min(Math.max(x, margin - 0.5), gridSize - 0.5 - margin);
+  y = Math.min(Math.max(y, margin - 0.5), gridSize - 0.5 - margin);
 
   return { x, y };
 }
