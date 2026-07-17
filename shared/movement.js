@@ -27,25 +27,38 @@ export function speedForInput(isRunning) {
   return isRunning ? PLAYER_RUN_SPEED : PLAYER_SPEED;
 }
 
+// O grid posiciona o centro do tile 0 em x=0 e o do último tile em
+// x=gridSize-1, então a borda visual real fica meio tile além desses
+// índices — por isso a margem é medida a partir de -0.5/gridSize-0.5,
+// não de 0/gridSize (senão sobra folga de um tile de um lado e zero do
+// outro).
+function clampToBounds(x, y, gridSize, margin) {
+  return {
+    x: Math.min(Math.max(x, margin - 0.5), gridSize - 0.5 - margin),
+    y: Math.min(Math.max(y, margin - 0.5), gridSize - 0.5 - margin),
+  };
+}
+
 export function stepPosition(position, { dx, dy }, dt, options = {}) {
   if (dx === 0 && dy === 0) return { x: position.x, y: position.y };
 
-  const { speed, gridSize = GRID_SIZE, margin = WORLD_MARGIN } = options;
+  const { speed, gridSize = GRID_SIZE, margin = WORLD_MARGIN, isBlocked } = options;
   const len = Math.hypot(dx, dy);
   const nx = dx / len;
   const ny = dy / len;
 
-  // O grid posiciona o centro do tile 0 em x=0 e o do último tile em
-  // x=gridSize-1, então a borda visual real fica meio tile além desses
-  // índices — por isso a margem é medida a partir de -0.5/gridSize-0.5,
-  // não de 0/gridSize (senão sobra folga de um tile de um lado e zero do
-  // outro).
-  let x = position.x + nx * speed * dt;
-  let y = position.y + ny * speed * dt;
-  x = Math.min(Math.max(x, margin - 0.5), gridSize - 0.5 - margin);
-  y = Math.min(Math.max(y, margin - 0.5), gridSize - 0.5 - margin);
+  const target = clampToBounds(position.x + nx * speed * dt, position.y + ny * speed * dt, gridSize, margin);
+  if (!isBlocked || !isBlocked(target.x, target.y)) return target;
 
-  return { x, y };
+  // Obstáculo (ex: água) no caminho: tenta deslizar só num eixo, como em
+  // jogos 2D clássicos, em vez de travar o jogador seco encostado na borda.
+  const xOnly = clampToBounds(target.x, position.y, gridSize, margin);
+  if (!isBlocked(xOnly.x, xOnly.y)) return xOnly;
+
+  const yOnly = clampToBounds(position.x, target.y, gridSize, margin);
+  if (!isBlocked(yOnly.x, yOnly.y)) return yOnly;
+
+  return { x: position.x, y: position.y };
 }
 
 // Início do pulo é disparado por evento (tecla pressionada agora), não por

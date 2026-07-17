@@ -9,6 +9,8 @@ import {
   advanceJump,
   normalizeName,
   isValidName,
+  generateLake,
+  isInLake,
 } from '@rpg/shared';
 import { MapState } from '../schema/MapState.js';
 import { PlayerState } from '../schema/PlayerState.js';
@@ -22,6 +24,9 @@ export class MapRoom extends Room {
   onCreate(options) {
     this.mapId = options?.mapId ?? this.roomName;
     this.setState(new MapState());
+    // O lago é um recurso de terreno só do mapa "forest" (ver client/src/maps/forest.js);
+    // outros mapas reaproveitam esta mesma sala genérica sem essa feature de colisão.
+    this.lake = this.mapId === 'forest' ? generateLake(GRID_SIZE) : null;
 
     // Estado auxiliar por conexão que não faz parte do schema sincronizado:
     // o input bruto recebido do client e a velocidade instantânea do pulo.
@@ -103,7 +108,10 @@ export class MapRoom extends Room {
       const isMoving = dx !== 0 || dy !== 0;
       const isRunning = isMoving && input.run;
 
-      const { x, y } = stepPosition(player, { dx, dy }, dt, { speed: speedForInput(isRunning) });
+      const { x, y } = stepPosition(player, { dx, dy }, dt, {
+        speed: speedForInput(isRunning),
+        isBlocked: this.lake ? (px, py) => isInLake(this.lake, px, py) : undefined,
+      });
       player.x = x;
       player.y = y;
       player.moving = isMoving;

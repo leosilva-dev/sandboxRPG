@@ -8,36 +8,16 @@ import {
   stepPosition,
   startJump,
   advanceJump,
+  isInLake,
 } from '@rpg/shared';
 import GameClient from '../net/GameClient.js';
 import { generateForestMap } from '../maps/forest.js';
 import TouchControls from '../input/TouchControls.js';
 
-const TILE_KEYS = [
-  'grassTile',
-  'pathTile',
-  'treeSmall',
-  'treeMedium',
-  'treeLarge',
-  'bush1',
-  'bush2',
-  'bush3',
-  'bush4',
-  'bush5',
-  'bush6',
-  'rock1',
-  'rock2',
-  'rock3',
-  'rock4',
-  'rock5',
-  'rock6',
-  'grassTuft1',
-  'grassTuft2',
-  'grassTuft3',
-  'grassTuft4',
-  'grassTuft5',
-  'grassTuft6',
-];
+const TINY_SWORDS_BASE = 'assets/tiny-swords/update-010';
+// Deco/*.png soltos usados como decoração de cena (rochas, arbustos, touceiras,
+// cogumelos e o ídolo de pedra do anel de ruínas) — ver forest.js pros índices.
+const DECO_KEYS = ['01', '02', '04', '05', '06', '07', '08', '09', '10', '11', '18'];
 
 const DIRECTIONS = ['down', 'up', 'left', 'right'];
 const WALK_FRAME_COUNT = 9;
@@ -54,12 +34,6 @@ const RECONCILIATION_FACTOR = 0.15;
 const REMOTE_INTERPOLATION_FACTOR = 0.25;
 // Distância em px acima dos pés (origem do sprite) onde o número fica, acima da cabeça.
 const PLAYER_LABEL_OFFSET_Y = 70;
-// Tiles de chão nascem em 16px (pixel art) — escala pra preencher exatamente
-// o TILE_SIZE (64px) da grade, sem espaços nem sobreposição entre células.
-const GROUND_SCALE = TILE_SIZE / 16;
-// Árvores/arbustos/pedras/touceiras do mesmo pacote já nascem proporcionais
-// entre si — uma única escala preserva a variação de tamanho da arte original.
-const DECORATION_SCALE = 1.5;
 
 const MINIMAP_SIZE = 160;
 const MINIMAP_MARGIN = 16;
@@ -92,8 +66,21 @@ export default class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    TILE_KEYS.forEach((tileKey) => {
-      this.load.image(tileKey, `assets/tiles/${tileKey}.png`);
+    this.load.spritesheet('ground-tiles', `${TINY_SWORDS_BASE}/terrain/ground/tilemap-flat.png`, {
+      frameWidth: 64,
+      frameHeight: 64,
+    });
+    this.load.spritesheet('tree-tiles', `${TINY_SWORDS_BASE}/resources/trees/tree.png`, {
+      frameWidth: 192,
+      frameHeight: 192,
+    });
+    this.load.image('water-tile', `${TINY_SWORDS_BASE}/terrain/water/water.png`);
+    this.load.spritesheet('foam-tiles', `${TINY_SWORDS_BASE}/terrain/water/foam/foam.png`, {
+      frameWidth: 192,
+      frameHeight: 192,
+    });
+    DECO_KEYS.forEach((n) => {
+      this.load.image(`deco-${n}`, `${TINY_SWORDS_BASE}/deco/${n}.png`);
     });
 
     DIRECTIONS.forEach((dir) => {
@@ -250,9 +237,9 @@ export default class GameScene extends Phaser.Scene {
     for (let gx = 0; gx < this.map.size; gx++) {
       for (let gy = 0; gy < this.map.size; gy++) {
         const screen = gridToScreen(gx, gy);
-        const tile = this.add.image(screen.x, screen.y, this.map.getGroundKey(gx, gy));
+        const ground = this.map.getGroundFrame(gx, gy);
+        const tile = this.add.image(screen.x, screen.y, ground.key, ground.frame);
         tile.setOrigin(0.5, 0.5);
-        tile.setScale(GROUND_SCALE);
         tile.setDepth(-1000); // floor always behind everything
         tile.setTint(this.map.getGroundTint(gx, gy));
       }
@@ -260,11 +247,11 @@ export default class GameScene extends Phaser.Scene {
   }
 
   placeProps() {
-    this.map.decorations.forEach(({ x, y, key: tileKey, scale }) => {
+    this.map.decorations.forEach(({ x, y, key: tileKey, frame, scale }) => {
       const screen = gridToScreen(x, y);
-      const prop = this.add.image(screen.x, screen.y, tileKey);
+      const prop = this.add.image(screen.x, screen.y, tileKey, frame);
       prop.setOrigin(0.5, 1);
-      prop.setScale(DECORATION_SCALE * (scale ?? 1));
+      prop.setScale(scale ?? 1);
       prop.setDepth(screen.y);
       this.props.push(prop);
     });
@@ -286,7 +273,10 @@ export default class GameScene extends Phaser.Scene {
     const isRunning = isMoving && input.run;
 
     if (isMoving) {
-      const { x, y } = stepPosition(this.player, { dx, dy }, dt, { speed: speedForInput(isRunning) });
+      const { x, y } = stepPosition(this.player, { dx, dy }, dt, {
+        speed: speedForInput(isRunning),
+        isBlocked: (px, py) => isInLake(this.map.lake, px, py),
+      });
       this.player.x = x;
       this.player.y = y;
       this.facing = resolveFacing(this.facing, input);

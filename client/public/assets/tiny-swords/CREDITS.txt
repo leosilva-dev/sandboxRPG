@@ -1,0 +1,36 @@
+Tiny Swords asset pack, by pixelfrog-assets (itch.io).
+
+Two generations of the pack are kept side by side because they don't fully
+overlap in content or art style:
+
+- free-pack/    -- original free release. 5 recolored armies (Black, Blue,
+                   Purple, Red, Yellow), each with Archer/Lancer/Monk/Pawn/
+                   Warrior units and Archery/Barracks/Castle/House1-3/
+                   Monastery/Tower buildings. Flat single-tone terrain
+                   tileset (5 color variants), resources (gold/meat/tools/
+                   wood), decorations (bushes/clouds/rocks/duck), particle
+                   FX, and a full UI kit (buttons/bars/banners/icons/avatars).
+
+- update-010/   -- newer release, reorganized around two factions (Knights
+                   vs Goblins) instead of 5 recolored armies. Knights keep
+                   color variants (Blue/Purple/Red/Yellow) for buildings and
+                   troops (Archer/Pawn/Warrior + a Dead sprite); Goblins are
+                   siege/utility units (Barrel, TNT, Torch), not humanoid
+                   troops, in this free tier. Richer terrain (flat + elevation
+                   tilemap, single water style, bridges), resources (Gold
+                   Mine, Trees, Sheep, generic resource pickups), and a much
+                   more polished UI kit (9-slice buttons/banners, cursor
+                   pointers, connectable ribbons).
+
+No license/README file was bundled with either download. Before shipping or
+monetizing anything built with these, verify current usage terms on the
+itch.io page (https://pixelfrog-assets.itch.io/tiny-swords) rather than
+assuming — free asset packs on itch.io commonly allow personal/commercial
+use in a finished game but forbid reselling/redistributing the raw assets.
+
+Folder/file names were slugified (lowercase, dashes) from the original
+"Some Name.png" / "Some Folder" convention for URL-safety. `.aseprite`
+source files are NOT in this folder (they're never fetched by the browser,
+so shipping them here would bloat the built site) -- they live in
+/art-source/tiny-swords/ at the repo root, mirroring this same structure,
+for anyone who wants to re-edit the originals in Aseprite later.

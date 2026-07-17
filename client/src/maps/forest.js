@@ -1,10 +1,12 @@
-// Geração procedural do terreno do mapa "forest": grama de base com variação
-// sutil de tom (pra quebrar o tile liso repetido), zonas orgânicas com
-// identidade própria (mata fechada, região rochosa, clareiras, bosque de
-// árvores grandes), marcos fixos compostos só com os assets existentes
-// (anel de pedras, árvore ancestral, amontoado de pedras) e um caminho de
-// pedra serpenteando entre pontos de passagem. Determinístico (seed fixa)
-// para o layout não mudar a cada reload.
+// Geração procedural do terreno do mapa "forest": chão autotiled de verdade
+// (grama/caminho de terra, com bordas reais tiradas do tilemap Tiny Swords),
+// zonas orgânicas com identidade própria (mata fechada, região rochosa,
+// clareiras, bosque de árvores grandes), marcos fixos compostos só com os
+// assets existentes (anel de pedras, árvore ancestral, amontoado de pedras)
+// e um caminho serpenteando entre pontos de passagem. Determinístico (seed
+// fixa) para o layout não mudar a cada reload.
+
+import { generateLake, isInLake } from '@rpg/shared';
 
 const SEED = 20260712;
 
@@ -28,8 +30,8 @@ function clamp01(v) {
 }
 
 // Hash determinístico de coordenadas inteiras -> [0,1). Não depende da
-// sequência do rng porque getGroundTint é chamada sob demanda por tile
-// (não durante a geração), então precisa ser uma função pura de (x, y).
+// sequência do rng porque é usado sob demanda por tile (não durante a
+// geração), então precisa ser uma função pura de (x, y).
 function hashLatticePoint(x, y) {
   let h = Math.imul(x, 374761393) + Math.imul(y, 668265263);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -78,34 +80,6 @@ function applyBrightness(hex, factor) {
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
 
-// Bresenham simples — preenche os buracos entre pontos consecutivos da curva
-// serpenteante (o passo ao longo dela pode saltar mais de 1 tile na diagonal).
-function lineCells(x0, y0, x1, y1) {
-  const cells = [];
-  const dx = Math.abs(x1 - x0);
-  const dy = -Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx + dy;
-  let x = x0;
-  let y = y0;
-
-  while (true) {
-    cells.push([x, y]);
-    if (x === x1 && y === y1) break;
-    const e2 = 2 * err;
-    if (e2 >= dy) {
-      err += dy;
-      x += sx;
-    }
-    if (e2 <= dx) {
-      err += dx;
-      y += sy;
-    }
-  }
-  return cells;
-}
-
 // Caminho reto entre dois waypoints deslocado perpendicularmente por uma
 // onda de dois harmônicos — dá uma curva serpenteante suave em vez da linha
 // reta em esquadro que o random-walk original produzia (ficava um corredor
@@ -139,17 +113,32 @@ function buildMeanderingPath(from, to, rng) {
   return points;
 }
 
+// Carimba um disco de raio fixo em cada ponto da curva contínua (bem mais
+// pontos do que células, então os discos vizinhos sempre se sobrepõem). Isso
+// dá um traçado largo com contorno relativamente suave direto na origem —
+// diferente de rasterizar uma linha fina em "escada" e só depois dilatar,
+// que preserva cada degrau da escada e deixa bolsões de grama presos entre
+// dois trechos próximos do próprio caminho.
+const PATH_RADIUS = 1.4;
+
 function buildPath(from, to, rng, size) {
   const cells = [];
   const points = buildMeanderingPath(from, to, rng);
+  const r2 = PATH_RADIUS * PATH_RADIUS;
+  const ir = Math.ceil(PATH_RADIUS);
 
-  for (let i = 0; i < points.length - 1; i++) {
-    const [ax, ay] = points[i];
-    const [bx, by] = points[i + 1];
-    lineCells(Math.round(ax), Math.round(ay), Math.round(bx), Math.round(by)).forEach(([x, y]) => {
-      if (x >= 0 && y >= 0 && x < size && y < size) cells.push([x, y]);
-    });
-  }
+  points.forEach(([px, py]) => {
+    const cx = Math.round(px);
+    const cy = Math.round(py);
+    for (let dx = -ir; dx <= ir; dx++) {
+      for (let dy = -ir; dy <= ir; dy++) {
+        if (dx * dx + dy * dy > r2) continue;
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x >= 0 && y >= 0 && x < size && y < size) cells.push([x, y]);
+      }
+    }
+  });
 
   return cells;
 }
@@ -167,8 +156,52 @@ function stampPlaza(road, cx, cy) {
   offsets.forEach(([dx, dy]) => road.add(key(cx + dx, cy + dy)));
 }
 
+// Depois do carimbo de disco, ainda podem sobrar bolsões de 1-2 tiles de
+// grama quase engolidos pelo caminho (3 ou 4 dos 4 vizinhos cardeais já são
+// caminho) — a grama nesses bolsões usa a arte de "borda", e como não sobra
+// vizinho pra combinar direito, isso aparece como uma mancha com contorno
+// escuro cravada no meio do caminho. Fecha esses bolsões preenchendo com
+// caminho também, o que resolve sem precisar de peças de canto côncavo.
+function closeNotchesPass(road, size) {
+  const closed = new Set(road);
+  let changed = false;
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      if (road.has(key(x, y))) continue;
+      let pathNeighbors = 0;
+      [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ].forEach(([dx, dy]) => {
+        if (road.has(key(x + dx, y + dy))) pathNeighbors += 1;
+      });
+      if (pathNeighbors >= 3) {
+        closed.add(key(x, y));
+        changed = true;
+      }
+    }
+  }
+  return { closed, changed };
+}
+
+// Bolsões maiores que 1 tile (ex: dois tiles de grama grudados, cada um só
+// com 2 vizinhos de caminho) não fecham numa passada só — fechar um libera o
+// vizinho pra também virar 3+. Repete até estabilizar (ou um teto de
+// segurança) em vez de tentar prever cada topologia de escada na mão.
+function closeNotches(road, size) {
+  let current = road;
+  for (let i = 0; i < 6; i++) {
+    const { closed, changed } = closeNotchesPass(current, size);
+    current = closed;
+    if (!changed) break;
+  }
+  return current;
+}
+
 function generateRoad(size, rng) {
-  const road = new Set();
+  let road = new Set();
   const margin = 4;
   const waypoints = [
     [margin, Math.floor(size / 2)],
@@ -182,25 +215,122 @@ function generateRoad(size, rng) {
     cells.forEach(([x, y]) => road.add(key(x, y)));
   }
 
+  road = closeNotches(road, size);
   waypoints.slice(1, -1).forEach(([x, y]) => stampPlaza(road, x, y));
 
   return road;
 }
 
-const TREE_VARIANTS = ['treeSmall', 'treeMedium', 'treeLarge'];
-const BUSH_VARIANTS = ['bush1', 'bush2', 'bush3', 'bush4', 'bush5', 'bush6'];
-const ROCK_VARIANTS = ['rock1', 'rock2', 'rock3', 'rock4', 'rock5', 'rock6'];
-const GRASS_TUFT_VARIANTS = [
-  'grassTuft1',
-  'grassTuft2',
-  'grassTuft3',
-  'grassTuft4',
-  'grassTuft5',
-  'grassTuft6',
-];
+// --- Autotile do chão (Tiny Swords update-010, terrain/ground/tilemap-flat.png) ---
+// Folha 640x256 = 10 colunas x 4 linhas de 64px. Conferido pixel a pixel: o
+// "blob" de grama é na verdade só 3x3 (col0/row0 = borda, col1/row1 = recorte
+// liso, col2/row2 = borda do outro lado) — col3/row3 são peças extras
+// separadas, não uma continuação. O bloco de areia só tem um recorte liso
+// confirmado (col6) e uma borda (col7); sem contraparte confiável do outro
+// lado, então a areia fica sempre lisa e só a grama ganha um contorno fino
+// onde encosta no caminho — um toque de detalhe sem exagerar.
+const GROUND_SHEET_KEY = 'ground-tiles';
+const GROUND_SHEET_COLS = 10;
+const GRASS_EDGE = { left: 0, fill: 1, right: 2 };
+const GRASS_ROW = { top: 0, fill: 1, bottom: 2 };
+const PATH_FILL_FRAME = 1 * GROUND_SHEET_COLS + 6; // col 6, row 1 — lisa, confirmada
+
+function frameIndex(col, row) {
+  return row * GROUND_SHEET_COLS + col;
+}
+
+function makeGroundFrameGetter(size, road, water) {
+  const isPath = (x, y) => road.has(key(x, y));
+  const inBounds = (x, y) => x >= 0 && y >= 0 && x < size && y < size;
+
+  return function getGroundFrame(x, y) {
+    if (water.has(key(x, y))) return { key: WATER_TILE_KEY, frame: undefined };
+    if (isPath(x, y)) return { key: GROUND_SHEET_KEY, frame: PATH_FILL_FRAME };
+
+    // Fora do caminho: só ganha o contorno fino se encostar nele — o interior
+    // do campo aberto continua liso.
+    const pathAt = (nx, ny) => (inBounds(nx, ny) ? isPath(nx, ny) : false);
+    const colClass = pathAt(x - 1, y) ? 'left' : pathAt(x + 1, y) ? 'right' : 'fill';
+    const rowClass = pathAt(x, y - 1) ? 'top' : pathAt(x, y + 1) ? 'bottom' : 'fill';
+    return { key: GROUND_SHEET_KEY, frame: frameIndex(GRASS_EDGE[colClass], GRASS_ROW[rowClass]) };
+  };
+}
+
+// --- Lago (Tiny Swords update-010: terrain/water/water.png + terrain/water/foam/foam.png) ---
+// A forma do lago vem de shared/water.js (a mesma fonte que o servidor usa
+// pra colisão autoritativa) — aqui só cuidamos do desenho: tile de água cheio
+// no interior, com espuma espalhada na margem pra suavizar o encontro com a
+// grama, já que o pack não tem peças de autotile dedicadas a costa no estilo
+// top-down flat. Usa uma seed própria, separada da sequência principal, pra
+// não deslocar a posição de árvores/decorações já geradas.
+const WATER_TILE_KEY = 'water-tile';
+const FOAM_SHEET_KEY = 'foam-tiles';
+const FOAM_FRAME_COUNT = 8;
+const FOAM_SEED = 20260714;
+const WATER_BASE_TINT = 0xffffff;
+
+function buildWaterTiles(size, lake) {
+  const water = new Set();
+  const reach = lake.radius * 1.4;
+  const minX = Math.max(0, Math.floor(lake.cx - reach));
+  const maxX = Math.min(size - 1, Math.ceil(lake.cx + reach));
+  const minY = Math.max(0, Math.floor(lake.cy - reach));
+  const maxY = Math.min(size - 1, Math.ceil(lake.cy + reach));
+
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      if (isInLake(lake, x, y)) water.add(key(x, y));
+    }
+  }
+  return water;
+}
+
+function isShoreTile(water, x, y) {
+  return (
+    !water.has(key(x - 1, y)) ||
+    !water.has(key(x + 1, y)) ||
+    !water.has(key(x, y - 1)) ||
+    !water.has(key(x, y + 1))
+  );
+}
+
+function generateShoreFoam(water) {
+  const rng = mulberry32(FOAM_SEED);
+  const decorations = [];
+  water.forEach((cellKey) => {
+    const [x, y] = cellKey.split(',').map(Number);
+    if (!isShoreTile(water, x, y) || rng() > 0.5) return;
+    decorations.push({
+      x: x + (rng() - 0.5) * 0.5,
+      y: y + (rng() - 0.5) * 0.5,
+      key: FOAM_SHEET_KEY,
+      frame: Math.floor(rng() * FOAM_FRAME_COUNT),
+      scale: 0.45 + rng() * 0.15,
+    });
+  });
+  return decorations;
+}
+
+// --- Decorações (Tiny Swords update-010: Deco/*.png soltos + Resources/Trees/Tree.png em folha) ---
+const TREE_SHEET_KEY = 'tree-tiles';
+const TREE_FRAME_COUNT = 6; // 6 coníferas na folha 4x3 (as outras 6 células ficam vazias/tronco)
+const TREE_BASE_SCALE = 0.75;
+const DECO_BASE_SCALE = 1.05;
+
+const BUSH_DECO = ['deco-07', 'deco-08', 'deco-09'];
+const ROCK_DECO = ['deco-04', 'deco-05', 'deco-06'];
+const TUFT_DECO = ['deco-10', 'deco-11', 'deco-01', 'deco-02'];
 
 function pick(rng, variants) {
   return variants[Math.floor(rng() * variants.length)];
+}
+
+function pickTree(rng) {
+  return { key: TREE_SHEET_KEY, frame: Math.floor(rng() * TREE_FRAME_COUNT), baseScale: TREE_BASE_SCALE };
+}
+
+function pickDeco(rng, variants) {
+  return { key: pick(rng, variants), frame: undefined, baseScale: DECO_BASE_SCALE };
 }
 
 // Perfis de zona: cada tipo tem uma cor de identidade (aplicada como tint no
@@ -290,12 +420,13 @@ function pickForZoneType(rng, zoneType) {
   const { weights, bigTrees } = ZONE_TYPES[zoneType];
   const roll = rng();
   if (roll < weights.tree) {
-    if (bigTrees) return rng() < 0.7 ? 'treeLarge' : 'treeMedium';
-    return pick(rng, TREE_VARIANTS);
+    const variant = pickTree(rng);
+    if (bigTrees) variant.baseScale *= 1.3;
+    return variant;
   }
-  if (roll < weights.tree + weights.bush) return pick(rng, BUSH_VARIANTS);
-  if (roll < weights.tree + weights.bush + weights.rock) return pick(rng, ROCK_VARIANTS);
-  return pick(rng, GRASS_TUFT_VARIANTS);
+  if (roll < weights.tree + weights.bush) return pickDeco(rng, BUSH_DECO);
+  if (roll < weights.tree + weights.bush + weights.rock) return pickDeco(rng, ROCK_DECO);
+  return pickDeco(rng, TUFT_DECO);
 }
 
 function generateZoneDecorations(size, rng, zones, blocked) {
@@ -322,11 +453,13 @@ function generateZoneDecorations(size, rng, zones, blocked) {
         const density = profile.maxDensity * (1 - d / localRadius) + 0.03;
         if (rng() > density) continue;
 
+        const variant = pickForZoneType(rng, zone.type);
         decorations.push({
           x: x + (rng() - 0.35) * 0.6,
           y: y + (rng() - 0.35) * 0.6,
-          key: pickForZoneType(rng, zone.type),
-          scale: 0.85 + rng() * 0.35,
+          key: variant.key,
+          frame: variant.frame,
+          scale: variant.baseScale * (0.85 + rng() * 0.35),
         });
       }
     }
@@ -345,11 +478,13 @@ function generateAmbientTufts(size, rng, blocked) {
     for (let y = 0; y < size; y++) {
       if (blocked.has(key(x, y))) continue;
       if (rng() > density) continue;
+      const variant = pickDeco(rng, TUFT_DECO);
       decorations.push({
         x: x + (rng() - 0.5) * 0.8,
         y: y + (rng() - 0.5) * 0.8,
-        key: pick(rng, GRASS_TUFT_VARIANTS),
-        scale: 0.8 + rng() * 0.3,
+        key: variant.key,
+        frame: variant.frame,
+        scale: variant.baseScale * (0.8 + rng() * 0.3),
       });
     }
   }
@@ -364,12 +499,13 @@ function generateLandmarks(size, rng) {
   const occupied = new Set();
   const stamp = (x, y) => occupied.add(key(x, y));
 
-  // Árvore ancestral: uma treeLarge cercada por um anel de pedras, como um
-  // pequeno santuário no meio do bosque de árvores grandes.
+  // Árvore ancestral: uma conífera grande cercada por um anel de pedras, como
+  // um pequeno santuário no meio do bosque de árvores grandes.
   {
     const cx = size * 0.32;
     const cy = size * 0.6;
-    decorations.push({ x: cx, y: cy, key: 'treeLarge', scale: 1.35 });
+    const tree = pickTree(rng);
+    decorations.push({ x: cx, y: cy, key: tree.key, frame: tree.frame, scale: tree.baseScale * 1.6 });
     stamp(cx, cy);
     const ringCount = 8;
     for (let i = 0; i < ringCount; i++) {
@@ -379,15 +515,15 @@ function generateLandmarks(size, rng) {
       decorations.push({
         x: rx + (rng() - 0.5) * 0.3,
         y: ry + (rng() - 0.5) * 0.3,
-        key: pick(rng, ROCK_VARIANTS),
-        scale: 0.8 + rng() * 0.3,
+        key: pick(rng, ROCK_DECO),
+        scale: DECO_BASE_SCALE * (0.8 + rng() * 0.3),
       });
       stamp(rx, ry);
     }
   }
 
   // Anel de pedras: um círculo isolado no meio do campo aberto, como ruínas
-  // antigas — um destino claro pra explorar.
+  // antigas, com um ídolo de pedra no centro — um destino claro pra explorar.
   {
     const cx = size * 0.8;
     const cy = size * 0.4;
@@ -399,12 +535,12 @@ function generateLandmarks(size, rng) {
       decorations.push({
         x: rx,
         y: ry,
-        key: pick(rng, ROCK_VARIANTS),
-        scale: 1 + rng() * 0.2,
+        key: pick(rng, ROCK_DECO),
+        scale: DECO_BASE_SCALE * (1 + rng() * 0.2),
       });
       stamp(rx, ry);
     }
-    decorations.push({ x: cx, y: cy, key: pick(rng, GRASS_TUFT_VARIANTS) });
+    decorations.push({ x: cx, y: cy, key: 'deco-18', scale: 1.1 });
     stamp(cx, cy);
   }
 
@@ -416,10 +552,10 @@ function generateLandmarks(size, rng) {
     for (let i = 0; i < 5; i++) {
       const x = cx + (rng() - 0.5) * 1.6;
       const y = cy + (rng() - 0.5) * 1.6;
-      decorations.push({ x, y, key: pick(rng, ROCK_VARIANTS), scale: 1.4 + rng() * 0.5 });
+      decorations.push({ x, y, key: pick(rng, ROCK_DECO), scale: DECO_BASE_SCALE * (1.4 + rng() * 0.5) });
       stamp(x, y);
     }
-    decorations.push({ x: cx + 1.2, y: cy + 0.6, key: pick(rng, BUSH_VARIANTS), scale: 1.1 });
+    decorations.push({ x: cx + 1.2, y: cy + 0.6, key: pick(rng, BUSH_DECO), scale: DECO_BASE_SCALE * 1.1 });
     stamp(cx, cy);
   }
 
@@ -427,8 +563,7 @@ function generateLandmarks(size, rng) {
 }
 
 const GRASS_BASE_TINT = 0xffffff;
-const PATH_BASE_TINT = 0xffffff;
-const ZONE_BLEND_STRENGTH = 0.85; // nunca funde 100% puro, mantém textura do tile original
+const ZONE_BLEND_STRENGTH = 0.55; // a textura nova já é bem detalhada — um tint forte demais apaga o desenho
 
 export function generateForestMap(size) {
   const rng = mulberry32(SEED);
@@ -436,26 +571,38 @@ export function generateForestMap(size) {
   const zones = buildZones(size, rng);
   const { decorations: landmarkDecorations, occupied } = generateLandmarks(size, rng);
 
-  const blocked = new Set([...road, ...occupied]);
+  const lake = generateLake(size);
+  const water = buildWaterTiles(size, lake);
+  const shoreFoam = generateShoreFoam(water);
+
+  const blocked = new Set([...road, ...occupied, ...water]);
 
   const decorations = [
     ...generateZoneDecorations(size, rng, zones, blocked),
     ...generateAmbientTufts(size, rng, blocked),
     ...landmarkDecorations,
+    ...shoreFoam,
   ];
 
-  function getGroundKey(x, y) {
-    return road.has(key(x, y)) ? 'pathTile' : 'grassTile';
-  }
+  const getGroundFrame = makeGroundFrameGetter(size, road, water);
 
-  // Tint por tile: variação sutil de brilho em todo canto (quebra o tile
-  // liso repetido) mais a cor de identidade da zona mais próxima, quando o
-  // tile cai dentro de uma.
+  // Tint por tile: variação sutil de brilho em todo canto (quebra a repetição
+  // do tile) mais a cor de identidade da zona mais próxima, quando o tile cai
+  // dentro de uma (só no chão de grama — o caminho fica com a cor própria).
+  // Água segue sua própria regra: mais escura no fundo do lago, mais clara
+  // perto da margem, pra sugerir profundidade sem precisar de arte extra.
   function getGroundTint(x, y) {
+    if (water.has(key(x, y))) {
+      const dist = Math.hypot(x - lake.cx, y - lake.cy);
+      const depthT = clamp01(1 - dist / lake.radius);
+      const jitter = 0.94 + smoothNoise(x, y, 4) * 0.1;
+      return applyBrightness(WATER_BASE_TINT, (1 - depthT * 0.35) * jitter);
+    }
+
     const isPath = road.has(key(x, y));
     const jitter = 0.92 + smoothNoise(x, y, 5) * 0.16;
 
-    let tint = isPath ? PATH_BASE_TINT : GRASS_BASE_TINT;
+    let tint = GRASS_BASE_TINT;
     if (!isPath) {
       const influence = zoneInfluenceAt(zones, x, y);
       if (influence) {
@@ -467,5 +614,5 @@ export function generateForestMap(size) {
     return applyBrightness(tint, jitter);
   }
 
-  return { size, name: 'Floresta', getGroundKey, getGroundTint, decorations };
+  return { size, name: 'Floresta', getGroundFrame, getGroundTint, decorations, lake };
 }
