@@ -7,6 +7,8 @@ import {
   stepPosition,
   startJump,
   advanceJump,
+  normalizeName,
+  isValidName,
 } from '@rpg/shared';
 import { MapState } from '../schema/MapState.js';
 import { PlayerState } from '../schema/PlayerState.js';
@@ -25,7 +27,6 @@ export class MapRoom extends Room {
     // o input bruto recebido do client e a velocidade instantânea do pulo.
     this.inputs = new Map();
     this.jumpVelocities = new Map();
-    this.nextPlayerNumber = 1;
 
     this.onMessage('input', (client, message) => {
       this.inputs.set(client.sessionId, {
@@ -53,9 +54,28 @@ export class MapRoom extends Room {
     this.setSimulationInterval((deltaTime) => this.tick(deltaTime), 1000 / TICK_RATE);
   }
 
-  onJoin(client) {
+  // Roda antes do jogador entrar na sala — rejeitar aqui fecha a conexão
+  // de forma limpa (o client recebe o erro na Promise do joinOrCreate) em
+  // vez de deixar entrar e só then expulsar depois.
+  onAuth(client, options) {
+    const name = normalizeName(options?.name);
+    if (!isValidName(name)) {
+      throw new Error('Nome inválido.');
+    }
+
+    const nameTaken = [...this.state.players.values()].some(
+      (player) => player.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (nameTaken) {
+      throw new Error('Esse nome já está em uso.');
+    }
+
+    return true;
+  }
+
+  onJoin(client, options) {
     const player = new PlayerState();
-    player.number = this.nextPlayerNumber++;
+    player.name = normalizeName(options?.name);
     player.x = GRID_SIZE / 2;
     player.y = GRID_SIZE / 2;
 

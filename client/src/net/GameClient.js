@@ -10,10 +10,14 @@ export default class GameClient {
     this.lastSentInputKey = null;
   }
 
-  async connect(mapId) {
-    this.room = await this.client.joinOrCreate(mapId);
+  async connect(mapId, options = {}) {
+    this.room = await this.client.joinOrCreate(mapId, options);
     this.$ = getStateCallbacks(this.room);
     return this.room;
+  }
+
+  get isConnected() {
+    return this.room !== null;
   }
 
   get sessionId() {

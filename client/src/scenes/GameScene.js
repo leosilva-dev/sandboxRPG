@@ -76,15 +76,19 @@ export default class GameScene extends Phaser.Scene {
     this.jump = { isJumping: false, jumpVelocity: 0, jumpHeight: 0 };
 
     this.touchControls = null;
-    this.net = new GameClient();
+    this.net = null;
+    this.playerName = '';
     this.sessionId = null;
     this.serverPlayer = null; // referência viva ao PlayerState do próprio jogador
-    this.playerNumber = null;
     this.remotePlayers = new Map(); // sessionId -> { sprite, label, state, renderX, renderY }
   }
 
   init(data) {
     this.mapId = data?.mapId ?? this.mapId;
+    this.playerName = data?.name ?? this.playerName;
+    // A NameEntryScene já resolve nome + conexão antes de chegar aqui; cai
+    // pra um client novo só se a cena for iniciada direto (ex: em dev).
+    this.net = data?.client ?? new GameClient();
   }
 
   preload() {
@@ -116,7 +120,7 @@ export default class GameScene extends Phaser.Scene {
     this.playerSprite.setOrigin(0.5, 1);
     this.playerLabel = this.createPlayerLabel('');
 
-    this.playerNumberText = this.add
+    this.playerNameText = this.add
       .text(16, 16, '', {
         fontFamily: 'monospace',
         fontSize: '20px',
@@ -182,7 +186,11 @@ export default class GameScene extends Phaser.Scene {
   }
 
   async connectToServer() {
-    await this.net.connect(this.mapId);
+    // A NameEntryScene normalmente já deixa o client conectado antes de
+    // iniciar esta cena; só conecta aqui se ainda não tiver acontecido.
+    if (!this.net.isConnected) {
+      await this.net.connect(this.mapId, { name: this.playerName });
+    }
     this.sessionId = this.net.sessionId;
 
     this.net.onPlayerAdd((player, sessionId) => {
@@ -191,9 +199,8 @@ export default class GameScene extends Phaser.Scene {
         this.player.x = player.x;
         this.player.y = player.y;
         this.serverPlayer = player;
-        this.playerNumber = player.number;
-        this.playerLabel.setText(`#${player.number}`);
-        this.playerNumberText.setText(`Jogador #${player.number}`);
+        this.playerLabel.setText(player.name);
+        this.playerNameText.setText(player.name);
         return;
       }
       this.addRemotePlayer(sessionId, player);
@@ -204,8 +211,8 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
-  createPlayerLabel(number) {
-    const label = this.add.text(0, 0, number === '' ? '' : `#${number}`, {
+  createPlayerLabel(name) {
+    const label = this.add.text(0, 0, name, {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#ffff00',
@@ -219,7 +226,7 @@ export default class GameScene extends Phaser.Scene {
   addRemotePlayer(sessionId, playerState) {
     const sprite = this.add.sprite(0, 0, 'idle-down-1');
     sprite.setOrigin(0.5, 1);
-    const label = this.createPlayerLabel(playerState.number);
+    const label = this.createPlayerLabel(playerState.name);
     this.remotePlayers.set(sessionId, {
       sprite,
       label,

@@ -3,7 +3,7 @@ import { Schema, defineTypes } from '@colyseus/schema';
 export class PlayerState extends Schema {
   constructor() {
     super();
-    this.number = 0;
+    this.name = '';
     this.x = 0;
     this.y = 0;
     this.facing = 'down';
@@ -15,7 +15,7 @@ export class PlayerState extends Schema {
 }
 
 defineTypes(PlayerState, {
-  number: 'uint16',
+  name: 'string',
   x: 'float32',
   y: 'float32',
   facing: 'string',
