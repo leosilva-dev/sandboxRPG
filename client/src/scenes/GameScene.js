@@ -254,16 +254,17 @@ export default class GameScene extends Phaser.Scene {
         tile.setOrigin(0.5, 0.5);
         tile.setScale(GROUND_SCALE);
         tile.setDepth(-1000); // floor always behind everything
+        tile.setTint(this.map.getGroundTint(gx, gy));
       }
     }
   }
 
   placeProps() {
-    this.map.decorations.forEach(({ x, y, key: tileKey }) => {
+    this.map.decorations.forEach(({ x, y, key: tileKey, scale }) => {
       const screen = gridToScreen(x, y);
       const prop = this.add.image(screen.x, screen.y, tileKey);
       prop.setOrigin(0.5, 1);
-      prop.setScale(DECORATION_SCALE);
+      prop.setScale(DECORATION_SCALE * (scale ?? 1));
       prop.setDepth(screen.y);
       this.props.push(prop);
     });
@@ -330,15 +331,24 @@ export default class GameScene extends Phaser.Scene {
       .setStrokeStyle(1, 0x0a2e1a)
       .setScrollFactor(0)
       .setDepth(10001);
+    const label = this.add
+      .text(0, 0, this.map.name, {
+        fontFamily: 'monospace',
+        fontSize: '14px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(10001);
 
-    return { bg, playerDot, remoteDots: new Map() };
+    return { bg, playerDot, remoteDots: new Map(), label };
   }
 
   // Reposiciona a caixa a cada frame com base na largura atual da câmera —
   // o canvas usa Phaser.Scale.RESIZE, então a janela pode mudar de tamanho
   // a qualquer momento e o minimapa precisa continuar colado no canto.
   updateMinimap() {
-    const { bg, playerDot, remoteDots } = this.minimap;
+    const { bg, playerDot, remoteDots, label } = this.minimap;
     const boxX = this.cameras.main.width - MINIMAP_MARGIN - MINIMAP_SIZE;
     const boxY = MINIMAP_MARGIN;
     const inner = MINIMAP_SIZE - MINIMAP_PADDING * 2;
@@ -348,6 +358,8 @@ export default class GameScene extends Phaser.Scene {
     bg.fillRect(boxX, boxY, MINIMAP_SIZE, MINIMAP_SIZE);
     bg.lineStyle(2, 0xffffff, 0.8);
     bg.strokeRect(boxX, boxY, MINIMAP_SIZE, MINIMAP_SIZE);
+
+    label.setPosition(boxX + MINIMAP_SIZE / 2, boxY + MINIMAP_SIZE + 4);
 
     const toMinimap = (x, y) => ({
       x: boxX + MINIMAP_PADDING + (x / GRID_SIZE) * inner,
